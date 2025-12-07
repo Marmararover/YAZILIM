@@ -23,14 +23,15 @@ Bu projede geliştirilen ana modüller:
 Her modül ilgili ekip üyesi tarafından geliştirilir ve düzenli olarak bu depoya yüklenir.
 
 👥 Ekip Görev Dağılımı
-🟦 Saadettin — Gazebo ve Simülasyon Geliştirme
+
+🟨 Saadettin — Gazebo ve Simülasyon Geliştirme
 -----------------------------------------------
 - Gazebo’da simülasyon ortamı oluşturma
 - CAD dosyalarını Gazebo’ya ekleme
 - ROS kodunun Gazebo ortamında test edilmesi
 - Sensörlerden gelen verilerin simülasyonda modellenmesi
 
-🟪 Ali — Navigasyon & AR-GPS İşleme
+🟨 Ali — Navigasyon & AR-GPS İşleme
 ------------------------------------
 Navigasyon görevi
 -----------------
@@ -39,14 +40,14 @@ Navigasyon görevi
 - En uygun yolu bulma algoritmaları
 - Otonom sürüş
 
-🟧 Defne — Sondaj Görevi
+🟨 Defne — Sondaj Görevi
 -------------------------
 Sondaj görevi
 -------------
 - Prob tespiti
 - Otonom sürüş
 
-🟩 Mustafa — Örnekleme Görevi
+🟨 Mustafa — Örnekleme Görevi
 ------------------------------
 - Örnekleme kaya tespiti sonrası fotoğraf çekme
 - Kayalık tespiti ve sınıflandırma
