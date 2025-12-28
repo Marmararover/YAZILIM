@@ -93,7 +93,7 @@ class CameraReceiver(QThread):
         print(f"[INFO] {self.camera_name} ZMQ SUB bağlanıyor -> {connect_addr}")
         socket.connect(connect_addr)
         socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        socket.RCVTIMEO = 1000
+        socket.RCVTIMEO = 500
 
         while self._running:
             try:
@@ -150,7 +150,7 @@ class TelemetryReceiver(QThread):
         print(f"[INFO] Telemetri ZMQ SUB bağlanıyor -> {connect_addr}")
         socket.connect(connect_addr)
         socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        socket.RCVTIMEO = 1000
+        socket.RCVTIMEO = 500
 
         while self._running:
             try:
@@ -193,7 +193,7 @@ class HealthReceiver(QThread):
         print(f"[INFO] Health Status ZMQ SUB bağlanıyor -> {connect_addr}")
         socket.connect(connect_addr)
         socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        socket.RCVTIMEO = 1000
+        socket.RCVTIMEO = 500
 
         while self._running:
             try:
@@ -1048,7 +1048,21 @@ class RoverControlStation(QMainWindow):
             self.on_record_camera_clicked(camera_name, checked)
 
     def keyPressEvent(self, event):
-        """Klavye tuşlarına basıldı"""
+        
+        """1-9 tuşları ile sekmelerde gezinme"""
+        
+        if Qt.Key_1 <= event.key() <= Qt.Key_9:
+
+            index = event.key() - Qt.Key_1
+                    
+            if index < self.tabs.count():
+                self.tabs.setCurrentIndex(index)
+                        
+            return
+
+        
+        """ WASD ile manuel kontrol"""
+        
         if not self.movement_enabled:
             return
         
@@ -1225,13 +1239,19 @@ class RoverControlStation(QMainWindow):
         """Pencere kapatılıyor"""
         self.add_log("[INFO] Sistem kapatılıyor...")
         
+        active_threads = [
+            self.logitech_thread, 
+            self.realsense_rgb_thread, 
+            self.realsense_depth_thread,
+            self.telemetry_thread, 
+            self.health_thread
+        ]
+
+
         # Threads durdur
-        for thread in [self.logitech_thread, self.realsense_rgb_thread, 
-                      self.realsense_depth_thread, self.telemetry_thread, 
-                      self.health_thread]:
+        for thread in active_threads:
             if thread:
                 thread.stop()
-                thread.wait(1000)
         
         # Video writers kapat
         for camera_name, writer in self.video_writers.items():
@@ -1239,6 +1259,10 @@ class RoverControlStation(QMainWindow):
                 writer.release()
                 self.add_log(f"[INFO] {camera_name} video writer kapatıldı")
         
+        for thread in active_threads:
+            if thread and thread.isRunning():
+                thread.wait(250)
+
         # ZMQ kapat
         try:
             self.zmq_cmd_socket.close(0)
