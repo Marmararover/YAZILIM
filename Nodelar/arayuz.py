@@ -21,8 +21,8 @@ from PyQt5.QtWidgets import (
     QTextEdit, QProgressBar, QGroupBox, QSplitter, QComboBox,
     QSlider, QCheckBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen, QBrush, QLinearGradient
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QPointF
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QPen, QBrush, QLinearGradient, QRadialGradient
 
 import zmq
 import cv2
@@ -269,7 +269,7 @@ class CameraWidget(QFrame):
         
         layout = QVBoxLayout()
         self.setLayout(layout)
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setContentsMargins(5,5,5,5)
         
         # Başlık
         header = QHBoxLayout()
@@ -280,20 +280,23 @@ class CameraWidget(QFrame):
             color: {THEME['accent_blue']};
             padding: 3px;
         """)
-        header.addWidget(self.title_label)
-        
+        self.title_label.setMaximumHeight(40)
+        header.addWidget(self.title_label) 
         header.addStretch()
+
+        # Kayıt göstergesi
+        self.rec_label = QLabel("")
+        self.rec_label.setStyleSheet(f"color: {THEME['error']}; font-size: 10px; font-weight: bold;")
+        self.rec_label.setHidden(True)
+        self.rec_label.setText("⏺️ REC")
+        header.addWidget(self.rec_label)
         
         # FPS göstergesi
         self.fps_label = QLabel("FPS: 0")
         self.fps_label.setStyleSheet(f"color: {THEME['accent_green']}; font-size: 10px;")
         header.addWidget(self.fps_label)
-        
-        # Kayıt göstergesi
-        self.rec_label = QLabel("")
-        self.rec_label.setStyleSheet(f"color: {THEME['error']}; font-size: 10px; font-weight: bold;")
-        header.addWidget(self.rec_label)
-        
+
+        header.setAlignment(Qt.AlignTop)  
         layout.addLayout(header)
         
         # Kamera görüntüsü
@@ -339,9 +342,9 @@ class CameraWidget(QFrame):
         """Kayıt durumunu ayarla"""
         self.is_recording = recording
         if recording:
-            self.rec_label.setText("⏺️ REC")
+            self.rec_label.setHidden(False)
         else:
-            self.rec_label.setText("")
+            self.rec_label.setHidden(True)
 
 
 class GaugeWidget(QWidget):
@@ -410,12 +413,140 @@ class StatusIndicator(QWidget):
         painter.drawEllipse(2, 2, 12, 12)
 
 
+class GamepadWidget(QWidget):
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 200) # Widget'ın minimum boyutu
+        
+        # --- DURUM DEĞİŞKENLERİ ---
+        # Analog değerleri (-1.0 ile 1.0 arası)
+        self.left_x = 0.0
+        self.left_y = 0.0
+        self.right_x = 0.0
+        self.right_y = 0.0
+        
+        # Buton durumları (Basılı mı? True/False)
+        self.buttons = {
+            'A': False, 'B': False, 'X': False, 'Y': False,
+            'LB': False, 'RB': False  # Omuz tuşları
+        }
+
+        # Renkler
+        self.color_body = QColor("#202033")      # Gamepad gövdesi
+        self.color_stick_base = QColor("#16213e") # Analog çukuru
+        self.color_stick_top = QColor("#e94560")  # Analog başlığı
+        self.color_btn_default = QColor("#444")   # Buton boş
+        self.color_btn_pressed = QColor("#00ff88") # Buton basılı
+
+
+    def update_analog(self, which, x, y):
+        """Analog verisini güncelle ve çizimi tetikle
+        which: 'left' veya 'right'
+        x, y: -1.0 ile 1.0 arası float
+        """
+        if which == 'left':
+            self.left_x = x
+            self.left_y = y
+        elif which == 'right':
+            self.right_x = x
+            self.right_y = y
+        self.update() # paintEvent'i tetikler
+
+    def update_button(self, btn_name, pressed):
+        """Buton durumunu güncelle"""
+        if btn_name in self.buttons:
+            self.buttons[btn_name] = pressed
+            self.update()
+
+    def paintEvent(self, event):
+        """Tüm çizim işlemi burada yapılır"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing) # Kenarları yumuşat
+
+        w = self.width()
+        h = self.height()
+
+        # 1. Gamepad Gövdesi (Basitçe yuvarlatılmış dikdörtgen)
+        painter.setBrush(QBrush(self.color_body))
+        painter.setPen(Qt.NoPen)
+        # Ortaya hizalı çizim
+        rect_w = w * 0.9
+        rect_h = h * 0.8
+        rect_x = (w - rect_w) / 2
+        rect_y = (h - rect_h) / 2
+        painter.drawRoundedRect(int(rect_x), int(rect_y), int(rect_w), int(rect_h), 30, 30)
+
+        # 2. Sol Analog Çizimi
+        # Konum: Sol tarafın ortası
+        left_center_x = w * 0.33
+        left_center_y = h * 0.7
+        self._draw_stick(painter, left_center_x, left_center_y, self.left_x, self.left_y)
+
+        # 3. Sağ Analog Çizimi
+        # Konum: Sağ tarafın alt ortası
+        right_center_x = w * 0.66
+        right_center_y = h * 0.7
+        self._draw_stick(painter, right_center_x, right_center_y, self.right_x, self.right_y)
+
+        # 4. ABXY Butonları
+        # Sağ üst tarafta konumlandır
+        btn_base_x = w * 0.85
+        btn_base_y = h * 0.5
+        offset = 25 # Butonların birbirine mesafesi
+        
+        self._draw_button(painter, btn_base_x, btn_base_y + offset, 'A')       # Alt
+        self._draw_button(painter, btn_base_x + offset, btn_base_y, 'B')       # Sağ
+        self._draw_button(painter, btn_base_x - offset, btn_base_y, 'X')       # Sol
+        self._draw_button(painter, btn_base_x, btn_base_y - offset, 'Y')       # Üst
+
+
+    def _draw_stick(self, painter, cx, cy, val_x, val_y):
+        """Bir analog stick çizer"""
+        radius_base = 35 # Çukurun yarıçapı
+        radius_top = 20  # Hareket eden parçanın yarıçapı
+        max_move = 15    # Analog ne kadar uzağa gidebilir (piksel)
+
+        # Tabanı çiz (Koyu çukur)
+        painter.setBrush(QBrush(self.color_stick_base))
+        painter.drawEllipse(QPointF(cx, cy), radius_base, radius_base)
+
+        # Hareketli başlığı hesapla
+        # Gelen veri -1 ile 1 arasında. Bunu piksel hareketine çeviriyoruz.
+        move_x = val_x * max_move
+        move_y = val_y * max_move # Genelde Y ekseni terstir, gerekirse - ile çarp
+
+        # Başlığı çiz (Hareketli kısım)
+        painter.setBrush(QBrush(self.color_stick_top))
+        painter.drawEllipse(QPointF(cx + move_x, cy + move_y), radius_top, radius_top)
+
+    def _draw_button(self, painter, cx, cy, name="", cornered=0):
+        """Tek bir buton çizer"""
+        radius = 12
+        is_pressed = self.buttons[name]
+        
+        color = self.color_btn_pressed if is_pressed else self.color_btn_default
+        painter.setBrush(QBrush(color))
+
+        if not cornered:
+            painter.drawEllipse(QPointF(cx, cy), radius, radius)
+        else:
+            painter.drawRect(QPointF(cx, cy), radius, radius)
+
+
+        # Harfi içine yaz
+        painter.setPen(Qt.white)
+        painter.drawText(int(cx-5), int(cy+5), name)
+        painter.setPen(Qt.NoPen) # Kalemi sıfırla
+
+
+
 # ----------------- ANA ARAYÜZ -----------------
 
 class RoverControlStation(QMainWindow):
     def __init__(self, ros_node):
         super().__init__()
-        self.setWindowTitle("🚀 Marmara Rover - 3-Camera Control Station")
+        self.setWindowTitle("Marmara Rover Control Station")
         self.ros_node = ros_node
         
         # ROS publishers
@@ -535,7 +666,7 @@ class RoverControlStation(QMainWindow):
         """)
         
         # Sekmeler
-        self.tabs.addTab(self._create_cameras_tab(), "📹 Kamera Görüntüleri")
+        self.tabs.addTab(self._create_cameras_tab(), "📹 Kamera & Kontrol")
         self.tabs.addTab(self._create_main_tab(), "🎮 Kontrol & Telemetri")
         self.tabs.addTab(self._create_telemetry_tab(), "📊 Grafikler & Sensörler")
         self.tabs.addTab(self._create_logs_tab(), "📝 Sistem Logları")
@@ -560,7 +691,7 @@ class RoverControlStation(QMainWindow):
         header.setLayout(layout)
         
         # Logo ve başlık
-        title = QLabel("🚀 MARMARA ROVER - 3 CAMERA CONTROL STATION")
+        title = QLabel("MARMARA ROVER CONTROL STATION")
         title.setStyleSheet(f"""
             font-size: 22px;
             font-weight: bold;
@@ -611,9 +742,31 @@ class RoverControlStation(QMainWindow):
         self.status_label = QLabel("Bağlantı Bekleniyor...")
         self.status_label.setStyleSheet(f"color: {THEME['text_secondary']}; font-size: 11px;")
         status_layout.addWidget(self.status_label)
+
+        self.btn_connect = QPushButton("BAĞLAN")
+        self.btn_connect.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {THEME['accent']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 15px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {THEME['accent_blue']};
+            }}
+        """)
+        self.btn_connect.clicked.connect(self.on_connect_clicked)
+        
+        status_layout.addWidget(self.btn_connect)
         
         layout.addWidget(status_widget)
+
+        # Bağlantı butonu
         
+
         return header
 
     def _create_cameras_tab(self):
@@ -621,24 +774,17 @@ class RoverControlStation(QMainWindow):
         tab = QWidget()
         layout = QGridLayout()
         tab.setLayout(layout)
-        
-        # Kamera widget'ları oluştur
-        self.camera_widgets = {}
-        
-        # Üst satır: Ön kameralar (RealSense RGB + Depth)
-        self.camera_widgets['realsense_rgb'] = CameraWidget("RealSense RGB (Ön Kamera)", "rgb")
-        self.camera_widgets['realsense_depth'] = CameraWidget("RealSense Depth (Ön Kamera)", "depth")
-        
-        layout.addWidget(self.camera_widgets['realsense_rgb'], 0, 0)
-        layout.addWidget(self.camera_widgets['realsense_depth'], 0, 1)
-        
-        # Alt satır: Arka kamera (Logitech) - tam genişlik
-        self.camera_widgets['logitech'] = CameraWidget("Logitech C270 (Arka Kamera)", "rgb")
-        layout.addWidget(self.camera_widgets['logitech'], 1, 0, 1, 2)
-        
-        # Kayıt kontrolleri
+
+        # Bir konteyner içinde video kayıt kontrolü ve gamepad widgetleri
+        container = QWidget()
+        container_layout = QHBoxLayout()
+
+        container_layout.setContentsMargins(0,0,0,0)
+        container.setLayout(container_layout)
+
+        # Kayıt Kontrolleri Widget
         record_card = ModernCard("🎥 Video Kayıt Kontrolü")
-        record_layout = QHBoxLayout()
+        record_layout = QVBoxLayout()
         
         self.record_buttons = {}
         for cam_name, display_name in [
@@ -689,7 +835,32 @@ class RoverControlStation(QMainWindow):
         self.btn_record_all = btn_record_all
         
         record_card.content_layout.addLayout(record_layout)
-        layout.addWidget(record_card, 2, 0, 1, 2)
+        record_card.setMaximumWidth(200)
+        container_layout.addWidget(record_card)
+
+        # Gamepad Widget
+        
+        self.gamepad_widget = GamepadWidget()
+        container_layout.addWidget(self.gamepad_widget)
+        
+        layout.addWidget(container , 1, 0)
+        
+
+        
+        # Kamera widget'ları oluştur
+        self.camera_widgets = {}
+        
+        # Üst satır: Ön kameralar (RealSense RGB + Depth)
+        self.camera_widgets['realsense_rgb'] = CameraWidget("RealSense RGB (Ön Kamera)", "rgb")
+        self.camera_widgets['realsense_depth'] = CameraWidget("RealSense Depth (Ön Kamera)", "depth")
+        
+        layout.addWidget(self.camera_widgets['realsense_rgb'], 0, 1, 1, 2)
+        layout.addWidget(self.camera_widgets['realsense_depth'], 1, 1)
+        
+        # Alt satır: Arka kamera (Logitech) - tam genişlik
+        self.camera_widgets['logitech'] = CameraWidget("Logitech C270 (Arka Kamera)", "rgb")
+        layout.addWidget(self.camera_widgets['logitech'], 0, 0)
+                
         
         return tab
 
@@ -704,28 +875,7 @@ class RoverControlStation(QMainWindow):
         left_layout = QVBoxLayout()
         left_panel.setLayout(left_layout)
         left_panel.setMaximumWidth(350)
-        
-        # Bağlantı kartı
-        connection_card = ModernCard("🔌 Bağlantı")
-        self.btn_connect = QPushButton("ROVERA BAĞLAN")
-        self.btn_connect.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {THEME['accent']};
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 15px;
-                font-size: 14px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {THEME['accent_blue']};
-            }}
-        """)
-        self.btn_connect.clicked.connect(self.on_connect_clicked)
-        connection_card.content_layout.addWidget(self.btn_connect)
-        left_layout.addWidget(connection_card)
-        
+
         # Hareket kontrol kartı
         movement_card = ModernCard("🎮 Hareket Kontrolü")
         self.btn_move = QPushButton("HAREKETİ AKTİF ET")
@@ -755,6 +905,7 @@ class RoverControlStation(QMainWindow):
         movement_card.content_layout.addWidget(keyboard_info)
         
         left_layout.addWidget(movement_card)
+        
         
         # Hızlı telemetri kartı
         quick_telemetry_card = ModernCard("📡 Hızlı Bakış Telemetri")
@@ -1004,15 +1155,6 @@ class RoverControlStation(QMainWindow):
             self.status_label.setStyleSheet(f"color: {THEME['error']}; font-size: 11px;")
             self.add_log(f"[ERROR] Bağlantı hatası: {e}")
 
-    def on_move_clicked(self, checked):
-        """Hareket butonuna tıklandı"""
-        self.movement_enabled = checked
-        if checked:
-            self.btn_move.setText("✅ HAREKET AKTİF (WASD)")
-            self.add_log("[INFO] Hareket kontrolü aktif edildi")
-        else:
-            self.btn_move.setText("HAREKETİ AKTİF ET")
-            self.add_log("[INFO] Hareket kontrolü devre dışı")
 
     def on_record_camera_clicked(self, camera_name: str, checked: bool):
         """Tek kamera kayıt butonuna tıklandı"""
@@ -1046,6 +1188,17 @@ class RoverControlStation(QMainWindow):
         for camera_name, btn in self.record_buttons.items():
             btn.setChecked(checked)
             self.on_record_camera_clicked(camera_name, checked)
+
+
+    def on_move_clicked(self, checked):
+        """Hareket butonuna tıklandı"""
+        self.movement_enabled = checked
+        if checked:
+            self.btn_move.setText("✅ HAREKET AKTİF (WASD)")
+            self.add_log("[INFO] Hareket kontrolü aktif edildi")
+        else:
+            self.btn_move.setText("HAREKETİ AKTİF ET")
+            self.add_log("[INFO] Hareket kontrolü devre dışı")
 
     def keyPressEvent(self, event):
         
