@@ -875,6 +875,36 @@ class RoverControlStation(QMainWindow):
         left_layout = QVBoxLayout()
         left_panel.setLayout(left_layout)
         left_panel.setMaximumWidth(350)
+
+        # Hareket kontrol kartı
+        movement_card = ModernCard("🎮 Hareket Kontrolü")
+        self.btn_move = QPushButton("HAREKETİ AKTİF ET")
+        self.btn_move.setCheckable(True)
+        self.btn_move.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {THEME['bg_light']};
+                color: {THEME['text_secondary']};
+                border: 2px solid {THEME['border']};
+                border-radius: 8px;
+                padding: 15px;
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            QPushButton:checked {{
+                background-color: {THEME['success']};
+                color: white;
+                border-color: {THEME['success']};
+            }}
+        """)
+        self.btn_move.clicked.connect(self.on_move_clicked)
+        movement_card.content_layout.addWidget(self.btn_move)
+        
+        keyboard_info = QLabel("⌨️ WASD ile kontrol")
+        keyboard_info.setStyleSheet(f"color: {THEME['text_secondary']}; font-size: 11px; padding: 5px;")
+        keyboard_info.setAlignment(Qt.AlignCenter)
+        movement_card.content_layout.addWidget(keyboard_info)
+        
+        left_layout.addWidget(movement_card)
         
         
         # Hızlı telemetri kartı
