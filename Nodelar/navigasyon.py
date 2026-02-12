@@ -10,13 +10,15 @@ import tf2_ros
 import tf2_geometry_msgs
 from tf_transformations import euler_from_quaternion
 
-from cv_bridge import CvBridge
+from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
 import math
 import time
 
 import serial
 import struct
+
+import cv2
 
 class RoverNavigation(Node):
     def __init__(self):
@@ -31,16 +33,35 @@ class RoverNavigation(Node):
 
         self.START_FRAME = 0xABCD
 
+        self.cv_bridge = CvBridge()
+
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
+        self.aruco_params = cv2.aruco.DetectorParameters()
+
         self.current_x = None
         self.current_y = None
         self.current_yaw = None
-        self.target_x = None
-        self.target_y = None
+        self.current_target_x = None
+        self.current_target_y = None
+        self.current_target_id = None
+
+        self.first_target_x, self.first_target_y = 7, 10
+        self.second_target_x, self.second_target_y = 8, 17
+        self.third_target_x, self.third_target_y = 0, 25
+        self.fourth_target_x, self.fourth_target_y = -7, 15
+
+        self.is_first_target_reached = False
+        self.is_second_target_reached = False
+        self.is_third_target_reached = False
+        self.is_fourth_target_reached = False
 
         self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
 
         self.timer = self.create_timer(0.05, self.control_loop)
-        
+
+        self.align_depth_sub = self.create_subscription(Image, '/realsense/depth/color_aligned', self.align_depth_callback, 10)
+        self.rgb_sub = self.create_subscription(Image, '/realsense/rgb/image_raw', self.rgb_callback, 10)
+
     def read_serial_feedback(self):
         if self.ser is None or not self.ser.is_open:
             return None
@@ -80,61 +101,111 @@ class RoverNavigation(Node):
                 self.get_logger().warn(f"Serial Read Error: {e}")
         return None
 
+    def align_depth_callback(self, msg):
+        return
+    
+    def rgb_callback(self, msg):
+        try:
+            cv_image = self.cv_bridge.imgmsg_to_cv2(msg, 'bgr8')
+        except CvBridgeError as e:
+            self.get_logger().error(f"CvBridge error: {e}")
+            return
+        
+        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+
+        corners, ids, rejected = cv2.aruco.detectMarkers(
+            gray, 
+            self.aruco_dict, 
+            parameters=self.aruco_params
+        )
+
+        if ids is not None:
+            cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
+
+            for i, marker_id in enumerate(ids):
+                mid = marker_id[0]
+                if 51 <= mid <= 64:
+                    c = corners[i][0]
+                    center_x = int(np.mean(c[:, 0]))
+                    center_y = int(np.mean(c[:, 1]))
+                    
+                    error_x = center_x - (w / 2)
+
+                        
     def control_loop(self):
         feedback = self.read_serial_feedback()
 
         if feedback:
-            feedback_to_meter_per_sec = 0.001
+            feedback_to_meter_per_sec = 0.001 # Hoverboarddan gelen encoder verisini m/s cinsine çevirme katsayısı
 
-            vel_right = feedback['speedR_meas'] * feedback_to_meter_per_sec
-            vel_left = feedback['speedL_meas'] * feedback_to_meter_per_sec
+            vel_right = feedback['speedR_meas'] * feedback_to_meter_per_sec # Hoverboarddan gelen sağ tekerlek encoder verisinin m/s cinsinden hızı
+            vel_left = feedback['speedL_meas'] * feedback_to_meter_per_sec # Hoverboarddan gelen sol tekerlek encoder verisinin m/s cinsinden hızı
 
             dt = 0.05 # Time spend / Timer period
             rover_width = 0.5 # Meter
 
-            vel_linear = (vel_right + vel_left) / 2.0
-            vel_angular = (vel_right - vel_left) / rover_width
+            vel_linear = (vel_right + vel_left) / 2.0 # Aracın doğrusal hızı
+            vel_angular = (vel_right - vel_left) / rover_width # Aracın açısal hızı
 
             if self.current_x == None: # Set start point as 0,0
                 self.current_x = 0.0
                 self.current_y = 0.0
                 self.current_yaw = 0.0
 
-            self.current_yaw += vel_angular * dt
+            self.current_yaw += vel_angular * dt # Aracın anlık dönme derecesi
             if self.current_yaw > math.pi: self.current_yaw -= 2*math.pi
             elif self.current_yaw < -math.pi: self.current_yaw += 2*math.pi
 
-            self.current_x += vel_linear * math.cos(self.current_yaw) * dt
-            self.current_y += vel_linear * math.sin(self.current_yaw) * dt
+            self.current_x += vel_linear * math.cos(self.current_yaw) * dt # Aracın anlık x konumu
+            self.current_y += vel_linear * math.sin(self.current_yaw) * dt # Aracın anlık y konumu
 
         if self.current_x == None:
             self.get_logger().warn("Odometry data is waiting.")
             return
 
-        self.target_x = 5.0
-        self.target_y = 0.0
+        if self.is_first_target_reached == False:
+            self.current_target_x = self.first_target_x
+            self.current_target_y = self.first_target_y
+            self.current_target_id = 1
+        elif self.is_second_target_reached == False:
+            self.current_target_x = self.second_target_x
+            self.current_target_y = self.second_target_y
+            self.current_target_id = 2
+        elif self.is_third_target_reached == False:
+            self.current_target_x = self.third_target_x
+            self.current_target_y = self.third_target_y
+            self.current_target_id = 3
+        elif self.is_fourth_target_reached == False:
+            self.current_target_x = self.fourth_target_x
+            self.current_target_y = self.fourth_target_y
+            self.current_target_id = 4
+        else:
+            self.current_target_x = 0.0
+            self.current_target_y = 0.0
+            self.current_target_id = 5
 
-        dx = self.target_x - self.current_x
-        dy = self.target_y - self.current_y
+        dx = self.current_target_x - self.current_x # Hedefe olan x mesafesi
+        dy = self.current_target_y - self.current_y # Hedefe olan y mesafesi
 
-        self.target_yaw = math.atan2(dy, dx)
+        self.target_yaw = math.atan2(dy, dx) # Hedefin x ekseni ile arasındaki açı
 
-        self.distance_error = math.sqrt((dx)**2 + (dy)**2)
-        self.heading_error = self.target_yaw - self.current_yaw
+        self.distance_error = math.sqrt((dx)**2 + (dy)**2) # Hedefe olan uzaklık
+        self.heading_error = self.target_yaw - self.current_yaw # Araç ile hedef arasındaki açı değeri
 
         while self.heading_error > math.pi:
             self.heading_error -= 2 * math.pi
         while self.heading_error < -math.pi:
             self.heading_error += 2 * math.pi
 
-        Kp_linear = 0.5
-        Kp_angular = 1.5
+        Kp_linear = 0.5  # Doğrusal hareket için PID kontrolün P kısmı
+        Kp_angular = 1.5 # Açısal hareket için PID kontrolün P kısmı
 
-        self.linear_speed = Kp_linear * self.distance_error
-        self.angular_speed = Kp_angular * self.heading_error
+        self.linear_speed = Kp_linear * self.distance_error # Aracın ilerleyeceği doğrusal hız (m/s)
+        self.angular_speed = Kp_angular * self.heading_error # Aracın ilerleyeceği açısal hız (m/s)
 
-        self.max_linear_speed = 1.0
-        self.max_angular_speed = 1.0
+        self.max_linear_speed = 1.0 # Aracın sahip olabileceği max doğrusal hız (m/s)
+        self.max_angular_speed = 1.0 # Aracın sahip olabileceği max açısal hız (m/s)
         if self.linear_speed > self.max_linear_speed:
             self.linear_speed = self.max_linear_speed
         if self.linear_speed < -self.max_linear_speed:
@@ -148,6 +219,15 @@ class RoverNavigation(Node):
             self.linear_speed = 0
             self.angular_speed = 0
             self.get_logger().info("Target reached")
+            match self.current_target_id:
+                case 1:
+                    self.is_first_target_reached = True
+                case 2:
+                    self.is_second_target_reached = True
+                case 3:
+                    self.is_third_target_reached = True
+                case 4:
+                    self.is_fourth_target_reached = True
 
         self.send_to_hoverboard(self.linear_speed, self.angular_speed)
 
@@ -163,13 +243,13 @@ class RoverNavigation(Node):
         if self.ser is None or not self.ser.is_open:
             return
 
-        LINEAR_SCALE = 300.0  
+        LINEAR_SCALE = 300.0 # Tekerleklere gidecek hız verisinin (m/s) formatından float veri tipine çevirilme katsayısı 
         ANGULAR_SCALE = 150.0 
 
         uSpeed = int(lin_speed * LINEAR_SCALE)
         uSteer = int(ang_speed * ANGULAR_SCALE)
 
-        uSpeed = max(min(uSpeed, 1000), -1000)
+        uSpeed = max(min(uSpeed, 1000), -1000) # Tekerleklere gidecek hızın max alabileceği float değeri
         uSteer = max(min(uSteer, 1000), -1000)
 
         checksum = (self.START_FRAME ^ (uSteer & 0xFFFF) ^ (uSpeed & 0xFFFF)) & 0xFFFF
@@ -192,4 +272,4 @@ def main(args=None):
     rclpy.shutdown()
 
 if __name__ == "__main__":
-    main()
+    main()  
