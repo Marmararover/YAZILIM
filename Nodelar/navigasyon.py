@@ -2,7 +2,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-from sensor_msgs.msg import Image, CameraInfo, Imu
+from sensor_msgs.msg import Image, CameraInfo, Imu, NavSatFix
 from geometry_msgs.msg import Twist, PoseStamped, Point
 from nav_msgs.msg import Odometry
 
@@ -32,18 +32,21 @@ class RoverNavigation(Node):
             self.ser = None
 
         self.START_FRAME = 0xABCD
+        self.buffer = bytearray()
 
         self.cv_bridge = CvBridge()
 
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
         self.aruco_params = cv2.aruco.DetectorParameters()
 
+        self.current_yaw = 0
         self.current_x = None
         self.current_y = None
-        self.current_yaw = None
         self.current_target_x = None
         self.current_target_y = None
         self.current_target_id = None
+        self.gnss_origin_lat = None
+        self.gnss_origin_lon = None
 
         self.first_target_x, self.first_target_y = 7, 10
         self.second_target_x, self.second_target_y = 8, 17
@@ -54,52 +57,58 @@ class RoverNavigation(Node):
         self.is_second_target_reached = False
         self.is_third_target_reached = False
         self.is_fourth_target_reached = False
+        self.is_gnss_available = False
+
+        self.timer = self.create_timer(0.05, self.control_loop)
+        self.last_time = self.get_clock().now().nanoseconds / 1e9
 
         self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
 
-        self.timer = self.create_timer(0.05, self.control_loop)
-
         self.align_depth_sub = self.create_subscription(Image, '/realsense/depth/color_aligned', self.align_depth_callback, 10)
         self.rgb_sub = self.create_subscription(Image, '/realsense/rgb/image_raw', self.rgb_callback, 10)
+        self.gnss_sub = self.create_subscription(NavSatFix, '/gnss/fix', self.gnss_callback, 10)
 
     def read_serial_feedback(self):
         if self.ser is None or not self.ser.is_open:
             return None
-        if self.ser.in_waiting >= 18:
-            try:
-                header = self.ser.read(2)
-                if len(header) < 2: return None
+        
+        waiting = self.ser.in_waiting
 
-                header_val = struct.unpack('<H', header)[0]
+        if waiting > 0:
+            new_data = self.ser.read(waiting)
+            self.buffer.extend(new_data)
 
-                if header_val == self.START_FRAME:
-                    data = self.ser.read(16)
-                    if len(data) == 16:
-                        unpacked_data = struct.unpack('<hhhhhhHH', data)
-
-                        data_checksum = unpacked_data[7]
-                        calc_checksum = (self.START_FRAME ^ unpacked_data[0] ^ unpacked_data[1] 
-                                         ^ unpacked_data[2] ^ unpacked_data[3] ^ unpacked_data[4] 
-                                         ^ unpacked_data[5] ^ unpacked_data[6]) & 0xFFFF
-
-                        if calc_checksum == data_checksum:    
-                            feedback = {
-                                        'cmd1': unpacked_data[0],
-                                        'cmd2': unpacked_data[1],
-                                        'speedR_meas': unpacked_data[2],
-                                        'speedL_meas': unpacked_data[3],
-                                        'batVoltage': unpacked_data[4],
-                                        'boardTemp': unpacked_data[5],
-                                        'cmdLed': unpacked_data[6],
-                                        'checksum': unpacked_data[7]
-                                    }
-                            return feedback
-                        else:
-                            self.get_logger().warn(f"Checksum Error! Calculated checksum: {calc_checksum}, Checksum from data: {data_checksum}")
-                            return None
-            except Exception as e:
-                self.get_logger().warn(f"Serial Read Error: {e}")
-        return None
+        if len(self.buffer) >= 18:
+            header_bytes = b'\xCD\xAB'
+            last_packet_idx = self.buffer.rfind(header_bytes)
+            if last_packet_idx != -1:
+                if len(self.buffer) >= last_packet_idx + 18:
+                    unpacked_data = struct.unpack('<hhhhhhHH', self.buffer[last_packet_idx + 2: last_packet_idx + 18])
+                    del(self.buffer[:last_packet_idx+18])
+                    data_checksum = unpacked_data[7]
+                    calc_checksum = (self.START_FRAME ^ unpacked_data[0] ^ unpacked_data[1] 
+                             ^ unpacked_data[2] ^ unpacked_data[3] ^ unpacked_data[4] 
+                             ^ unpacked_data[5] ^ unpacked_data[6]) & 0xFFFF
+                    if calc_checksum == data_checksum:    
+                        feedback = {
+                            'cmd1': unpacked_data[0],
+                            'cmd2': unpacked_data[1],
+                            'speedR_meas': unpacked_data[2],
+                            'speedL_meas': unpacked_data[3],
+                            'batVoltage': unpacked_data[4],
+                            'boardTemp': unpacked_data[5],
+                            'cmdLed': unpacked_data[6],
+                            'checksum': unpacked_data[7]
+                        }
+                        return feedback
+                    else:
+                        self.get_logger().warn(f"Checksum Error! Calculated checksum: {calc_checksum}, Checksum from data: {data_checksum}")
+                        return None
+                else:
+                    return
+            else:
+                self.buffer.clear()
+                return
 
     def align_depth_callback(self, msg):
         return
@@ -132,37 +141,56 @@ class RoverNavigation(Node):
                     
                     error_x = center_x - (w / 2)
 
-                        
+    def gnss_callback(self, msg):
+        R = 6378137.0
+        try:
+            if self.gnss_origin_lat == None:
+                self.gnss_origin_lat = msg.latitude
+                self.gnss_origin_lon = msg.longitude
+                self.is_gnss_available = True
+                return
+
+            d_lat = math.radians(msg.latitude - self.gnss_origin_lat)
+            d_lon = math.radians(msg.longitude - self.gnss_origin_lon)
+            
+            ref_lat_rad = math.radians(self.gnss_origin_lat)
+
+            self.current_x = d_lon * R * math.cos(ref_lat_rad)
+            self.current_y = d_lat * R
+            
+        except Exception as e:
+            self.get_logger().warn(f"GNSS Read Error: {e}")
+
     def control_loop(self):
         feedback = self.read_serial_feedback()
 
-        if feedback:
-            feedback_to_meter_per_sec = 0.001 # Hoverboarddan gelen encoder verisini m/s cinsine çevirme katsayısı
+        now = self.get_clock().now().nanoseconds / 1e9
+        dt = now - self.last_time # Geçen zaman
+        self.last_time = now
 
-            vel_right = feedback['speedR_meas'] * feedback_to_meter_per_sec # Hoverboarddan gelen sağ tekerlek encoder verisinin m/s cinsinden hızı
-            vel_left = feedback['speedL_meas'] * feedback_to_meter_per_sec # Hoverboarddan gelen sol tekerlek encoder verisinin m/s cinsinden hızı
-
-            dt = 0.05 # Time spend / Timer period
-            rover_width = 0.5 # Meter
-
-            vel_linear = (vel_right + vel_left) / 2.0 # Aracın doğrusal hızı
-            vel_angular = (vel_right - vel_left) / rover_width # Aracın açısal hızı
-
-            if self.current_x == None: # Set start point as 0,0
-                self.current_x = 0.0
-                self.current_y = 0.0
-                self.current_yaw = 0.0
-
-            self.current_yaw += vel_angular * dt # Aracın anlık dönme derecesi
-            if self.current_yaw > math.pi: self.current_yaw -= 2*math.pi
-            elif self.current_yaw < -math.pi: self.current_yaw += 2*math.pi
-
-            self.current_x += vel_linear * math.cos(self.current_yaw) * dt # Aracın anlık x konumu
-            self.current_y += vel_linear * math.sin(self.current_yaw) * dt # Aracın anlık y konumu
-
-        if self.current_x == None:
-            self.get_logger().warn("Odometry data is waiting.")
+        if self.is_gnss_available == False:
+            self.get_logger().warn("GNSS data is waiting.")
             return
+        else:
+            
+            if feedback:
+                feedback_to_meter_per_sec = 0.001 # Hoverboarddan gelen encoder verisini m/s cinsine çevirme katsayısı
+
+                vel_right = feedback['speedR_meas'] * feedback_to_meter_per_sec # Hoverboarddan gelen sağ tekerlek encoder verisinin m/s cinsinden hızı
+                vel_left = feedback['speedL_meas'] * feedback_to_meter_per_sec # Hoverboarddan gelen sol tekerlek encoder verisinin m/s cinsinden hızı
+
+                rover_width = 0.5
+
+                vel_linear = (vel_right + vel_left) / 2.0 # Aracın doğrusal hızı
+                vel_angular = (vel_right - vel_left) / rover_width # Aracın açısal hızı
+
+                self.current_yaw += vel_angular * dt # Aracın anlık dönme derecesi
+                if self.current_yaw > math.pi: self.current_yaw -= 2*math.pi
+                elif self.current_yaw < -math.pi: self.current_yaw += 2*math.pi
+            else:
+                self.get_logger().warn("Serial Port Read Error")
+                self.send_to_hoverboard(0, 0)
+                return
 
         if self.is_first_target_reached == False:
             self.current_target_x = self.first_target_x
@@ -206,14 +234,9 @@ class RoverNavigation(Node):
 
         self.max_linear_speed = 1.0 # Aracın sahip olabileceği max doğrusal hız (m/s)
         self.max_angular_speed = 1.0 # Aracın sahip olabileceği max açısal hız (m/s)
-        if self.linear_speed > self.max_linear_speed:
-            self.linear_speed = self.max_linear_speed
-        if self.linear_speed < -self.max_linear_speed:
-            self.linear_speed = -self.max_linear_speed
-        if self.angular_speed > self.max_angular_speed:
-            self.angular_speed = self.max_angular_speed
-        if self.angular_speed < -self.max_angular_speed:
-            self.angular_speed = -self.max_angular_speed
+        
+        self.linear_speed = np.clip(self.linear_speed, -self.max_linear_speed, self.max_linear_speed)
+        self.angular_speed = np.clip(self.angular_speed, -self.max_angular_speed, self.max_angular_speed)
 
         if self.distance_error < 0.5:
             self.linear_speed = 0
@@ -228,6 +251,10 @@ class RoverNavigation(Node):
                     self.is_third_target_reached = True
                 case 4:
                     self.is_fourth_target_reached = True
+                case 5:
+                    self.get_logger().info("MİSSON COMPLETED")
+                    self.send_to_hoverboard(0, 0)
+                    return
 
         self.send_to_hoverboard(self.linear_speed, self.angular_speed)
 
