@@ -20,6 +20,8 @@ import struct
 
 import cv2
 
+# İMU EKLE
+
 class RoverNavigation(Node):
     def __init__(self):
         super().__init__("Rover_navigation_node")
@@ -67,6 +69,7 @@ class RoverNavigation(Node):
         self.align_depth_sub = self.create_subscription(Image, '/realsense/depth/color_aligned', self.align_depth_callback, 10)
         self.rgb_sub = self.create_subscription(Image, '/realsense/rgb/image_raw', self.rgb_callback, 10)
         self.gnss_sub = self.create_subscription(NavSatFix, '/gnss/fix', self.gnss_callback, 10)
+        self.imu_sub = self.create_subscription(Imu, '/imu/data', self.imu_callback, 10)
 
     def read_serial_feedback(self):
         if self.ser is None or not self.ser.is_open:
@@ -160,6 +163,14 @@ class RoverNavigation(Node):
             
         except Exception as e:
             self.get_logger().warn(f"GNSS Read Error: {e}")
+    
+    def imu_callback(self, msg):
+        x = msg.orientation.x
+        y = msg.orientation.y
+        z = msg.orientation.z
+        w = msg.orientation.w
+        quaternions_list = [x, y, z, w]
+        self.current_yaw = euler_from_quaternion(quaternions_list)[2]
 
     def control_loop(self):
         feedback = self.read_serial_feedback()
@@ -182,11 +193,6 @@ class RoverNavigation(Node):
                 rover_width = 0.5
 
                 vel_linear = (vel_right + vel_left) / 2.0 # Aracın doğrusal hızı
-                vel_angular = (vel_right - vel_left) / rover_width # Aracın açısal hızı
-
-                self.current_yaw += vel_angular * dt # Aracın anlık dönme derecesi
-                if self.current_yaw > math.pi: self.current_yaw -= 2*math.pi
-                elif self.current_yaw < -math.pi: self.current_yaw += 2*math.pi
             else:
                 self.get_logger().warn("Serial Port Read Error")
                 self.send_to_hoverboard(0, 0)
