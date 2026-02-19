@@ -41,6 +41,11 @@ class RoverNavigation(Node):
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
         self.aruco_params = cv2.aruco.DetectorParameters()
 
+        self.warmup_count = 0
+        self.warmup_limit = 20
+        self.lat_buffer = []
+        self.lon_buffer = []
+
         self.current_yaw = 0
         self.current_x = None
         self.current_y = None
@@ -146,13 +151,21 @@ class RoverNavigation(Node):
 
     def gnss_callback(self, msg):
         R = 6378137.0
-        try:
-            if self.gnss_origin_lat == None:
-                self.gnss_origin_lat = msg.latitude
-                self.gnss_origin_lon = msg.longitude
-                self.is_gnss_available = True
-                return
 
+        if not self.is_gnss_available:
+            if warmup_count < self.warmup_limit:
+                self.lat_buffer.append(msg.latitude)
+                self.lon_buffer.append(msg.longitude)
+                warmup_count += 1
+                self.get_logger().info("Calibrating the GNSS data...")
+                return
+            else:
+                self.gnss_origin_lat = (sum(self.lat_buffer) / len(self.lat_buffer))
+                self.gnss_origin_lon = (sum(self.lon_buffer) / len(self.lon_buffer))
+                self.is_gnss_available = True
+                self.get_logger().info("GNSS data is calibrated")
+
+        try:
             d_lat = math.radians(msg.latitude - self.gnss_origin_lat)
             d_lon = math.radians(msg.longitude - self.gnss_origin_lon)
             
