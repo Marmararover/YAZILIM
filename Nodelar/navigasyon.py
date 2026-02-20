@@ -45,6 +45,8 @@ class RoverNavigation(Node):
         self.warmup_limit = 20
         self.lat_buffer = []
         self.lon_buffer = []
+        self.heading_deadband = 0.05
+        self.min_angular_speed = 0.1
 
         self.current_yaw = 0
         self.current_x = None
@@ -92,7 +94,6 @@ class RoverNavigation(Node):
             if last_packet_idx != -1:
                 if len(self.buffer) >= last_packet_idx + 18:
                     unpacked_data = struct.unpack('<hhhhhhHH', self.buffer[last_packet_idx + 2: last_packet_idx + 18])
-                    del(self.buffer[:last_packet_idx+18])
                     data_checksum = unpacked_data[7]
                     calc_checksum = (self.START_FRAME ^ unpacked_data[0] ^ unpacked_data[1] 
                              ^ unpacked_data[2] ^ unpacked_data[3] ^ unpacked_data[4] 
@@ -108,9 +109,11 @@ class RoverNavigation(Node):
                             'cmdLed': unpacked_data[6],
                             'checksum': unpacked_data[7]
                         }
+                        del(self.buffer[:last_packet_idx+18])
                         return feedback
                     else:
                         self.get_logger().warn(f"Checksum Error! Calculated checksum: {calc_checksum}, Checksum from data: {data_checksum}")
+                        del(self.buffer[:last_packet_idx + 1])
                         return None
                 else:
                     return
@@ -239,6 +242,17 @@ class RoverNavigation(Node):
 
         self.distance_error = math.sqrt((dx)**2 + (dy)**2) # Hedefe olan uzaklık
         self.heading_error = self.target_yaw - self.current_yaw # Araç ile hedef arasındaki açı değeri
+
+        if abs(self.heading_error) < self.heading_deadband:
+            self.angular_speed = 0
+            self.get_logger().info("Target is in the Rover's sight, anggular speed is zeroed.")
+        else:
+            raw_angular = Kp_angular * self.heading_error
+        
+        if raw_angular > 0:
+            self.angular_speed = max(self.min_angular_speed, min(raw_angular, self.max_angular_speed))
+        else:
+            self.angular_speed = min(-self.min_angular_speed, max(raw_angular, -self.max_angular_speed))
 
         while self.heading_error > math.pi:
             self.heading_error -= 2 * math.pi
