@@ -20,70 +20,70 @@ import struct
 
 import cv2
 
-# İMU EKLE
-
 class RoverNavigation(Node):
     def __init__(self):
         super().__init__("Rover_navigation_node")
 
         try:
             self.ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.1)
-            self.get_logger().info("Seri port baglantisi basarili.")
+            self.get_logger().info("Serial port connection is sucsessful.")
         except Exception as e:
-            self.get_logger().error(f"Seri port hatasi: {e}")
+            self.get_logger().error(f"Serial port Error: {e}")
             self.ser = None
 
-        self.START_FRAME = 0xABCD
-        self.buffer = bytearray()
+        self.START_FRAME = 0xABCD # Veri paketlerinin başlangıç değeri
+        self.buffer = bytearray() # Veri paketlerinin saklanacağı liste
 
-        self.cv_bridge = CvBridge()
+        self.cv_bridge = CvBridge() # CV bridge
 
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
-        self.aruco_params = cv2.aruco.DetectorParameters()
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250) # ArUco Marker kütüphanesi
+        self.aruco_params = cv2.aruco.DetectorParameters() # ArUco tespiti için konfigürasyon parametreleri
 
-        self.warmup_count = 0
-        self.warmup_limit = 20
-        self.lat_buffer = []
-        self.lon_buffer = []
-        self.heading_deadband = 0.05
-        self.min_angular_speed = 0.1
+        self.warmup_count = 0 # GNSS kalibrasyon için sayaç
+        self.warmup_limit = 20 # GNSS kalibrasyon sayacı için max değer
+        self.lat_buffer = [] # GNSS kalibrasyon için enlem değerlerinin saklanacağı liste
+        self.lon_buffer = [] # GNSS kalibrasyon için boylam değerlerinin saklanacağı liste
+        
+        self.heading_deadband = 0.05 # Aracın tepki vereceği min dönme açı değeri
+        self.min_angular_speed = 0.1 # Aracın sahip olabileceği min dönme hızı
+        self.max_angular_speed = 1.0 # Aracın sahip olabileceği max dönme hızı (m/s)
+        self.max_linear_speed = 1.0 # Aracın sahip olabileceği max doğrusal hız (m/s)
 
-        self.current_yaw = 0
-        self.current_x = None
-        self.current_y = None
-        self.current_target_x = None
-        self.current_target_y = None
-        self.current_target_id = None
-        self.gnss_origin_lat = None
-        self.gnss_origin_lon = None
+        self.current_yaw = 0 # Aracın bakış açısı
+        self.current_x = None # Aracın anlık bulunduğu x konumu
+        self.current_y = None # Aracın anlık bulunduğu x konumu
+        self.current_target_x = None # Hedefin anlık bulunduğu x konumu
+        self.current_target_y = None # Hedefin anlık bulunduğu y konumu
+        self.current_target_id = None # Hedefin numarası
+        self.gnss_origin_lat = None # GNSS başlangıç konumu (enlem)
+        self.gnss_origin_lon = None # GNSS başlangıç konumu (Boylam)
 
-        self.first_target_x, self.first_target_y = 7, 10
-        self.second_target_x, self.second_target_y = 8, 17
-        self.third_target_x, self.third_target_y = 0, 25
-        self.fourth_target_x, self.fourth_target_y = -7, 15
+        self.first_target_x, self.first_target_y = 7, 10  # İlk hedefin konumları
+        self.second_target_x, self.second_target_y = 8, 17 # İkinci hedefon konumları
+        self.third_target_x, self.third_target_y = 0, 25 # Üçüncü hedefin konumları
+        self.fourth_target_x, self.fourth_target_y = -7, 15 # Dördüncü hedefin konumları
 
-        self.is_first_target_reached = False
-        self.is_second_target_reached = False
-        self.is_third_target_reached = False
-        self.is_fourth_target_reached = False
-        self.is_gnss_available = False
+        self.is_first_target_reached = False # İlk hedefe ulaşıldı mı?
+        self.is_second_target_reached = False # İkinci hedefe ulaşıldı mı?
+        self.is_third_target_reached = False # Üçüncü Hedefe Ulaşıldı mı?
+        self.is_fourth_target_reached = False # Dördüncü hedefe ulaşıldı mı?
+        self.is_gnss_available = False # GNSS aktif mi?
 
-        self.timer = self.create_timer(0.05, self.control_loop)
-        self.last_time = self.get_clock().now().nanoseconds / 1e9
+        self.timer = self.create_timer(0.05, self.control_loop) # Zamanlayıcı
+        self.last_time = self.get_clock().now().nanoseconds / 1e9 # Anlık zaman değeri
 
-        self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 10) # Hız yayıncısı
 
-        self.align_depth_sub = self.create_subscription(Image, '/realsense/depth/color_aligned', self.align_depth_callback, 10)
-        self.rgb_sub = self.create_subscription(Image, '/realsense/rgb/image_raw', self.rgb_callback, 10)
-        self.gnss_sub = self.create_subscription(NavSatFix, '/gnss/fix', self.gnss_callback, 10)
-        self.imu_sub = self.create_subscription(Imu, '/imu/data', self.imu_callback, 10)
+        self.align_depth_sub = self.create_subscription(Image, '/realsense/depth/color_aligned', self.align_depth_callback, 10) # Derinlik algı abone
+        self.rgb_sub = self.create_subscription(Image, '/realsense/rgb/image_raw', self.rgb_callback, 10) # RGB abone
+        self.gnss_sub = self.create_subscription(NavSatFix, '/gnss/fix', self.gnss_callback, 10) # GNSS abone
+        self.imu_sub = self.create_subscription(Imu, '/imu/data', self.imu_callback, 10) # İMU abone
 
     def read_serial_feedback(self):
         if self.ser is None or not self.ser.is_open:
             return None
         
         waiting = self.ser.in_waiting
-
         if waiting > 0:
             new_data = self.ser.read(waiting)
             self.buffer.extend(new_data)
@@ -153,7 +153,7 @@ class RoverNavigation(Node):
                     error_x = center_x - (w / 2)
 
     def gnss_callback(self, msg):
-        R = 6378137.0
+        R = 6378137.0 # Dünyanın yarıçapı
 
         if not self.is_gnss_available:
             if warmup_count < self.warmup_limit:
@@ -169,10 +169,10 @@ class RoverNavigation(Node):
                 self.get_logger().info("GNSS data is calibrated")
 
         try:
-            d_lat = math.radians(msg.latitude - self.gnss_origin_lat)
+            d_lat = math.radians(msg.latitude - self.gnss_origin_lat) # Başlangıç konumuna olan uzaklık ölçülür
             d_lon = math.radians(msg.longitude - self.gnss_origin_lon)
             
-            ref_lat_rad = math.radians(self.gnss_origin_lat)
+            ref_lat_rad = math.radians(self.gnss_origin_lat) # Başlangıç konumunun radyana çevirilmiş hali
 
             self.current_x = d_lon * R * math.cos(ref_lat_rad)
             self.current_y = d_lat * R
@@ -237,22 +237,10 @@ class RoverNavigation(Node):
 
         dx = self.current_target_x - self.current_x # Hedefe olan x mesafesi
         dy = self.current_target_y - self.current_y # Hedefe olan y mesafesi
+        self.distance_error = math.sqrt((dx)**2 + (dy)**2) # Hedefe olan uzaklık
 
         self.target_yaw = math.atan2(dy, dx) # Hedefin x ekseni ile arasındaki açı
-
-        self.distance_error = math.sqrt((dx)**2 + (dy)**2) # Hedefe olan uzaklık
         self.heading_error = self.target_yaw - self.current_yaw # Araç ile hedef arasındaki açı değeri
-
-        if abs(self.heading_error) < self.heading_deadband:
-            self.angular_speed = 0
-            self.get_logger().info("Target is in the Rover's sight, anggular speed is zeroed.")
-        else:
-            raw_angular = Kp_angular * self.heading_error
-        
-        if raw_angular > 0:
-            self.angular_speed = max(self.min_angular_speed, min(raw_angular, self.max_angular_speed))
-        else:
-            self.angular_speed = min(-self.min_angular_speed, max(raw_angular, -self.max_angular_speed))
 
         while self.heading_error > math.pi:
             self.heading_error -= 2 * math.pi
@@ -262,14 +250,19 @@ class RoverNavigation(Node):
         Kp_linear = 0.5  # Doğrusal hareket için PID kontrolün P kısmı
         Kp_angular = 1.5 # Açısal hareket için PID kontrolün P kısmı
 
-        self.linear_speed = Kp_linear * self.distance_error # Aracın ilerleyeceği doğrusal hız (m/s)
-        self.angular_speed = Kp_angular * self.heading_error # Aracın ilerleyeceği açısal hız (m/s)
-
-        self.max_linear_speed = 1.0 # Aracın sahip olabileceği max doğrusal hız (m/s)
-        self.max_angular_speed = 1.0 # Aracın sahip olabileceği max açısal hız (m/s)
+        if abs(self.heading_error) < self.heading_deadband:
+            self.angular_speed = 0
+            self.get_logger().info("Target is in the Rover's sight, anggular speed is zeroed.")
+        else:
+            raw_angular = Kp_angular * self.heading_error
         
+        if raw_angular > 0:
+            self.angular_speed = max(self.min_angular_speed, min(raw_angular, self.max_angular_speed)) # Aracın ilerleyeceği açısal hız (m/s)
+        else:
+            self.angular_speed = min(-self.min_angular_speed, max(raw_angular, -self.max_angular_speed))
+
+        self.linear_speed = Kp_linear * self.distance_error # Aracın ilerleyeceği doğrusal hız (m/s)
         self.linear_speed = np.clip(self.linear_speed, -self.max_linear_speed, self.max_linear_speed)
-        self.angular_speed = np.clip(self.angular_speed, -self.max_angular_speed, self.max_angular_speed)
 
         if self.distance_error < 0.5:
             self.linear_speed = 0
@@ -297,9 +290,6 @@ class RoverNavigation(Node):
         self.vel_pub.publish(self.cmd)
 
     def send_to_hoverboard(self, lin_speed, ang_speed):
-        """
-        Float hız verilerini Arduino'nun beklediği int16 bayt dizisine çevirir ve gönderir.
-        """
         if self.ser is None or not self.ser.is_open:
             return
 
