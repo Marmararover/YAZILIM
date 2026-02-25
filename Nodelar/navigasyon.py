@@ -25,11 +25,23 @@ class RoverNavigation(Node):
         super().__init__("Rover_navigation_node")
 
         try:
-            self.ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.1)
-            self.get_logger().info("Serial port connection is sucsessful.")
+            self.ser_read = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.1)
+            self.get_logger().info("Serial port connection is sucsessful(ser_read).")
         except Exception as e:
-            self.get_logger().error(f"Serial port Error: {e}")
-            self.ser = None
+            self.get_logger().error(f"Serial port Error(ser_read): {e}")
+            self.ser_read = None
+        try:
+            self.ser_write_front = serial.Serial('/dev/ttyUSB1', 115200, timeout=0.1)
+            self.get_logger().info("Serial port connection is sucsessful(ser_write_front).")
+        except Exception as e:
+            self.get_logger().error(f"Serial port Error(ser_write_front): {e}")
+            self.ser_write_front = None
+        try:
+            self.ser_write_back = serial.Serial('/dev/ttyUSB2', 115200, timeout=0.1)
+            self.get_logger().info("Serial port connection is sucsessful(ser_write_back).")
+        except Exception as e:
+            self.get_logger().error(f"Serial port Error(ser_write_back): {e}")
+            self.ser_write_back = None
 
         self.START_FRAME = 0xABCD # Veri paketlerinin başlangıç değeri
         self.buffer = bytearray() # Veri paketlerinin saklanacağı liste
@@ -80,12 +92,12 @@ class RoverNavigation(Node):
         self.imu_sub = self.create_subscription(Imu, '/imu/data', self.imu_callback, 10) # İMU abone
 
     def read_serial_feedback(self):
-        if self.ser is None or not self.ser.is_open:
+        if self.ser_read is None or not self.ser_read.is_open:
             return None
         
-        waiting = self.ser.in_waiting
+        waiting = self.ser_read.in_waiting
         if waiting > 0:
-            new_data = self.ser.read(waiting)
+            new_data = self.ser_read.read(waiting)
             self.buffer.extend(new_data)
 
         if len(self.buffer) >= 18:
@@ -156,10 +168,10 @@ class RoverNavigation(Node):
         R = 6378137.0 # Dünyanın yarıçapı
 
         if not self.is_gnss_available:
-            if warmup_count < self.warmup_limit:
+            if self.warmup_count < self.warmup_limit:
                 self.lat_buffer.append(msg.latitude)
                 self.lon_buffer.append(msg.longitude)
-                warmup_count += 1
+                self.warmup_count += 1
                 self.get_logger().info("Calibrating the GNSS data...")
                 return
             else:
@@ -256,10 +268,10 @@ class RoverNavigation(Node):
         else:
             raw_angular = Kp_angular * self.heading_error
         
-        if raw_angular > 0:
-            self.angular_speed = max(self.min_angular_speed, min(raw_angular, self.max_angular_speed)) # Aracın ilerleyeceği açısal hız (m/s)
-        else:
-            self.angular_speed = min(-self.min_angular_speed, max(raw_angular, -self.max_angular_speed))
+            if raw_angular > 0:
+                self.angular_speed = max(self.min_angular_speed, min(raw_angular, self.max_angular_speed)) # Aracın ilerleyeceği açısal hız (m/s)
+            else:
+                self.angular_speed = min(-self.min_angular_speed, max(raw_angular, -self.max_angular_speed))
 
         self.linear_speed = Kp_linear * self.distance_error # Aracın ilerleyeceği doğrusal hız (m/s)
         self.linear_speed = np.clip(self.linear_speed, -self.max_linear_speed, self.max_linear_speed)
@@ -290,9 +302,6 @@ class RoverNavigation(Node):
         self.vel_pub.publish(self.cmd)
 
     def send_to_hoverboard(self, lin_speed, ang_speed):
-        if self.ser is None or not self.ser.is_open:
-            return
-
         LINEAR_SCALE = 300.0 # Tekerleklere gidecek hız verisinin (m/s) formatından float veri tipine çevirilme katsayısı 
         ANGULAR_SCALE = 150.0 
 
@@ -311,9 +320,17 @@ class RoverNavigation(Node):
         # h : int16 (Speed)
         # H : uint16 (Checksum)
         packet = struct.pack('<HhhH', self.START_FRAME, uSteer, uSpeed, checksum)
+        
+        if self.ser_write_front is None or not self.ser_write_front.is_open:
+            self.get_logger().warn("ser_write_front port is not open.")
+        else:
+            self.ser_write_front.write(packet)
 
-        self.ser.write(packet)
-
+        if self.ser_write_back is None or not self.ser_write_back.is_open:
+            self.get_logger().warn("ser_write_back port is not open.")
+        else:
+            self.ser_write_back.write(packet)
+        
 def main(args=None):
     rclpy.init(args=args)
     node = RoverNavigation()
